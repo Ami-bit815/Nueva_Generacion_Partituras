@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 <style>
   :root{
     --ink:#171310;
@@ -335,8 +337,21 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAb8AAAG/CAIAAABH
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 document.querySelectorAll('.logo-img').forEach(img => { img.src = LOGO_SRC; });
 
-const LIB_KEY = 'jaranera:library';
-const SCORE_PREFIX = 'jaranera:score:';
+// ---- Firebase (proyecto: Nueva Generacion Partituras) ----
+const firebaseConfig = {
+  apiKey: "AIzaSyAwYAGTUTYPUTzmw8FlquS73ESPqJvUHsM",
+  authDomain: "nueva-generacion-partituras.firebaseapp.com",
+  databaseURL: "https://nueva-generacion-partituras-default-rtdb.firebaseio.com",
+  projectId: "nueva-generacion-partituras",
+  storageBucket: "nueva-generacion-partituras.firebasestorage.app",
+  messagingSenderId: "882797146758",
+  appId: "1:882797146758:web:cd56ff1f121377bfe1d707"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+const LIB_KEY = 'library';
+const SCORE_PREFIX = 'scores/';
 const MAX_BYTES = 4.5 * 1024 * 1024;
 
 const screens = {
@@ -369,14 +384,15 @@ function fmtTime(ts){
 
 async function getLibrary(){
   try{
-    const r = await window.storage.get(LIB_KEY, true);
-    return r ? JSON.parse(r.value) : { repertoire: [], activeId: null, activeName: null, activeAt: null };
+    const snap = await db.ref(LIB_KEY).once('value');
+    const v = snap.val();
+    return v ? v : { repertoire: [], activeId: null, activeName: null, activeAt: null };
   }catch(e){
     return { repertoire: [], activeId: null, activeName: null, activeAt: null };
   }
 }
 async function setLibrary(lib){
-  return window.storage.set(LIB_KEY, JSON.stringify(lib), true);
+  return db.ref(LIB_KEY).set(lib);
 }
 
 /* ---------------- DIRECTOR ---------------- */
@@ -427,7 +443,7 @@ function initDirector(){
     broadcastBtn.textContent = 'Transmitiendo…';
     const id = 'sc_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
     try{
-      await window.storage.set(SCORE_PREFIX + id, director_selectedDataUrl, true);
+      await db.ref(SCORE_PREFIX + id).set(director_selectedDataUrl);
       const lib = await getLibrary();
       lib.repertoire.unshift({ id, name: nameInput.value.trim(), at: Date.now() });
       lib.activeId = id;
@@ -477,7 +493,7 @@ async function removeFromRepertoire(id){
     lib.activeId = null; lib.activeName = null; lib.activeAt = null;
   }
   await setLibrary(lib);
-  try{ await window.storage.delete(SCORE_PREFIX + id, true); }catch(e){}
+  try{ await db.ref(SCORE_PREFIX + id).remove(); }catch(e){}
   renderRepertoire(lib);
 }
 
@@ -519,12 +535,13 @@ function escapeHtml(s){
 }
 
 /* ---------------- MUSICO ---------------- */
-let musico_pollHandle = null;
 let musico_currentActiveId = null;
 let musico_pdfDoc = null;
 let musico_pageNum = 1;
 let musico_scale = 1.3;
 let musico_initialized = false;
+let musico_libRef = null;
+let musico_libListener = null;
 
 function initMusico(){
   if(!musico_initialized){
@@ -534,24 +551,30 @@ function initMusico(){
     document.getElementById('prev-page').onclick = () => { if(musico_pageNum > 1){ musico_pageNum--; renderMusicoPage(); } };
     document.getElementById('next-page').onclick = () => { if(musico_pdfDoc && musico_pageNum < musico_pdfDoc.numPages){ musico_pageNum++; renderMusicoPage(); } };
   }
-  checkForBroadcast();
   stopMusicoPolling();
-  musico_pollHandle = setInterval(checkForBroadcast, 3000);
+  musico_libRef = db.ref(LIB_KEY);
+  musico_libListener = (snap) => onBroadcastChange(snap.val());
+  musico_libRef.on('value', musico_libListener);
 }
 function stopMusicoPolling(){
-  if(musico_pollHandle){ clearInterval(musico_pollHandle); musico_pollHandle = null; }
+  if(musico_libRef && musico_libListener){
+    musico_libRef.off('value', musico_libListener);
+  }
+  musico_libRef = null;
+  musico_libListener = null;
 }
 
-async function checkForBroadcast(){
-  const lib = await getLibrary();
+async function onBroadcastChange(lib){
+  if(!lib) lib = { activeId: null, activeName: null };
   if(lib.activeId && lib.activeId !== musico_currentActiveId){
     musico_currentActiveId = lib.activeId;
     document.getElementById('now-playing-title').textContent = lib.activeName || 'Sin título';
     document.getElementById('now-playing').style.display = 'flex';
     try{
-      const scoreRes = await window.storage.get(SCORE_PREFIX + lib.activeId, true);
-      if(scoreRes){
-        await loadMusicoPdf(scoreRes.value);
+      const scoreSnap = await db.ref(SCORE_PREFIX + lib.activeId).once('value');
+      const dataUrl = scoreSnap.val();
+      if(dataUrl){
+        await loadMusicoPdf(dataUrl);
       }
     }catch(e){
       toast('No se pudo cargar la partitura.');
