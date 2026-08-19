@@ -213,6 +213,25 @@
   .viewer-controls button:disabled{opacity:.3; cursor:not-allowed;}
   .viewer-controls .page-ind{font-family:'IBM Plex Mono',monospace; font-size:12px; color:#F4ECD8; width:52px; text-align:center;}
 
+  /* ---------- immersive read mode ---------- */
+  #musico-screen .musico-chrome{
+    flex-shrink:0; overflow:hidden;
+    max-height:220px; opacity:1;
+    transition: max-height .3s ease, opacity .25s ease;
+  }
+  #musico-screen.chrome-hidden .musico-chrome{ max-height:0; opacity:0; }
+  #musico-screen .viewer-controls{ transition: opacity .25s ease; }
+  #musico-screen.chrome-hidden .viewer-controls{ opacity:0; pointer-events:none; }
+  #musico-screen .viewer{ transition: padding-top .3s ease; }
+  #musico-screen.chrome-hidden .viewer{ padding-top:10px; }
+  .chrome-hint{
+    position:fixed; top:14px; left:50%; transform:translateX(-50%) translateY(0);
+    background:rgba(22,58,51,.92); color:#F4ECD8; font-size:12.5px; padding:8px 16px;
+    border-radius:20px; z-index:40; box-shadow:var(--shadow); opacity:0;
+    transition: opacity .3s ease, transform .3s ease; pointer-events:none;
+  }
+  .chrome-hint.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
   ::-webkit-scrollbar{width:9px; height:9px;}
   ::-webkit-scrollbar-thumb{background:rgba(36,26,20,.22); border-radius:6px;}
   #musico-screen ::-webkit-scrollbar-thumb{background:rgba(244,236,216,.22);}
@@ -293,21 +312,23 @@
 
   <!-- MUSICO -->
   <div class="screen" id="musico-screen">
-    <div class="topbar">
-      <div class="brand">
-        <img class="logo-img topbar-logo" alt="Logo NG">
-        <div>
-          <h1>Nueva Generación · De los Hermanos Naal</h1>
-          <div class="tag">Vista músico</div>
+    <div class="musico-chrome" id="musico-chrome">
+      <div class="topbar">
+        <div class="brand">
+          <img class="logo-img topbar-logo" alt="Logo NG">
+          <div>
+            <h1>Nueva Generación · De los Hermanos Naal</h1>
+            <div class="tag">Vista músico</div>
+          </div>
         </div>
+        <div class="role-pill" id="musico-exit">Cambiar de rol</div>
       </div>
-      <div class="role-pill" id="musico-exit">Cambiar de rol</div>
-    </div>
-    <div class="now-playing" id="now-playing" style="display:none;">
-      <div class="dot live"></div>
-      <div>
-        <div class="label">Tocando ahora</div>
-        <div class="title" id="now-playing-title">—</div>
+      <div class="now-playing" id="now-playing" style="display:none;">
+        <div class="dot live"></div>
+        <div>
+          <div class="label">Tocando ahora</div>
+          <div class="title" id="now-playing-title">—</div>
+        </div>
       </div>
     </div>
     <div class="waiting" id="waiting-state">
@@ -321,6 +342,7 @@
       <button id="zoom-in">+</button>
       <div class="page-ind" id="page-ind">1 pág.</div>
     </div>
+    <div class="chrome-hint" id="chrome-hint" style="display:none;">Toca la partitura para mostrar/ocultar los controles</div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -361,7 +383,7 @@ function showScreen(name){
 document.getElementById('pick-director').onclick = () => { showScreen('director'); initDirector(); };
 document.getElementById('pick-musico').onclick = () => { showScreen('musico'); initMusico(); };
 document.getElementById('director-exit').onclick = () => { stopMusicoPolling(); showScreen('role'); };
-document.getElementById('musico-exit').onclick = () => { stopMusicoPolling(); showScreen('role'); };
+document.getElementById('musico-exit').onclick = () => { stopMusicoPolling(); document.getElementById('musico-screen').classList.remove('chrome-hidden'); showScreen('role'); };
 
 function toast(msg){
   const t = document.getElementById('toast');
@@ -534,12 +556,45 @@ let musico_scale = 1.3;
 let musico_initialized = false;
 let musico_libRef = null;
 let musico_libListener = null;
+let musico_chromeTimer = null;
+let musico_hintShown = false;
+
+function showChrome(){
+  const screenEl = document.getElementById('musico-screen');
+  screenEl.classList.remove('chrome-hidden');
+  clearTimeout(musico_chromeTimer);
+  musico_chromeTimer = setTimeout(hideChrome, 3200);
+}
+function hideChrome(){
+  document.getElementById('musico-screen').classList.add('chrome-hidden');
+}
+function toggleChrome(){
+  const screenEl = document.getElementById('musico-screen');
+  if(screenEl.classList.contains('chrome-hidden')){
+    showChrome();
+  } else {
+    clearTimeout(musico_chromeTimer);
+    hideChrome();
+  }
+}
+function flashHint(){
+  if(musico_hintShown) return;
+  musico_hintShown = true;
+  const hint = document.getElementById('chrome-hint');
+  hint.style.display = 'block';
+  requestAnimationFrame(() => hint.classList.add('show'));
+  setTimeout(() => {
+    hint.classList.remove('show');
+    setTimeout(() => { hint.style.display = 'none'; }, 350);
+  }, 3200);
+}
 
 function initMusico(){
   if(!musico_initialized){
     musico_initialized = true;
-    document.getElementById('zoom-in').onclick = () => { musico_scale = Math.min(musico_scale + 0.2, 3); renderAllPages(); };
-    document.getElementById('zoom-out').onclick = () => { musico_scale = Math.max(musico_scale - 0.2, 0.5); renderAllPages(); };
+    document.getElementById('zoom-in').onclick = (e) => { e.stopPropagation(); musico_scale = Math.min(musico_scale + 0.2, 3); renderAllPages(); };
+    document.getElementById('zoom-out').onclick = (e) => { e.stopPropagation(); musico_scale = Math.max(musico_scale - 0.2, 0.5); renderAllPages(); };
+    document.getElementById('viewer').addEventListener('click', toggleChrome);
   }
   stopMusicoPolling();
   musico_libRef = db.ref(LIB_KEY);
@@ -552,6 +607,7 @@ function stopMusicoPolling(){
   }
   musico_libRef = null;
   musico_libListener = null;
+  clearTimeout(musico_chromeTimer);
 }
 
 async function onBroadcastChange(lib){
@@ -565,6 +621,8 @@ async function onBroadcastChange(lib){
       const dataUrl = scoreSnap.val();
       if(dataUrl){
         await loadMusicoPdf(dataUrl);
+        showChrome();
+        flashHint();
       }
     }catch(e){
       toast('No se pudo cargar la partitura.');
@@ -576,6 +634,7 @@ async function onBroadcastChange(lib){
 
 async function loadMusicoPdf(dataUrl){
   document.getElementById('waiting-state').style.display = 'none';
+
   document.getElementById('viewer').style.display = 'flex';
   document.getElementById('viewer-controls').style.display = 'flex';
   const base64 = dataUrl.split(',')[1];
