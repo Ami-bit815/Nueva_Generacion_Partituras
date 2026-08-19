@@ -190,7 +190,7 @@
   .now-playing .label{font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--gold);}
   .now-playing .title{font-family:'Fraunces',serif; font-size:17px; font-weight:600;}
 
-  .viewer{flex:1; overflow:auto; display:flex; flex-direction:column; align-items:center; padding:18px 12px 90px; }
+  .viewer{flex:1; overflow:auto; display:flex; flex-direction:column; align-items:center; gap:14px; padding:18px 12px 100px; }
   .viewer canvas{background:#fff; box-shadow:var(--shadow); border-radius:2px; max-width:100%;}
   .waiting{
     flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
@@ -315,16 +315,11 @@
       <h2>Esperando al director</h2>
       <p>En cuanto se transmita una partitura, aparecerá aquí automáticamente. No necesitas hacer nada.</p>
     </div>
-    <div class="viewer" id="viewer" style="display:none;">
-      <canvas id="pdf-canvas"></canvas>
-    </div>
+    <div class="viewer" id="viewer" style="display:none;"></div>
     <div class="viewer-controls" id="viewer-controls" style="display:none;">
       <button id="zoom-out">−</button>
       <button id="zoom-in">+</button>
-      <div style="width:1px;height:20px;background:rgba(255,255,255,.18);margin:0 4px;"></div>
-      <button id="prev-page">‹</button>
-      <div class="page-ind" id="page-ind">1 / 1</div>
-      <button id="next-page">›</button>
+      <div class="page-ind" id="page-ind">1 pág.</div>
     </div>
   </div>
 
@@ -352,7 +347,6 @@ const db = firebase.database();
 
 const LIB_KEY = 'library';
 const SCORE_PREFIX = 'scores/';
-const MAX_BYTES = 4.5 * 1024 * 1024;
 
 const screens = {
   role: document.getElementById('role-screen'),
@@ -399,6 +393,7 @@ async function setLibrary(lib){
 let director_selectedFile = null;
 let director_selectedDataUrl = null;
 let director_initialized = false;
+const LARGE_FILE_WARN_BYTES = 8 * 1024 * 1024; // solo aviso, no bloquea
 
 function initDirector(){
   if(director_initialized) return;
@@ -411,25 +406,23 @@ function initDirector(){
   const broadcastBtn = document.getElementById('broadcast-btn');
 
   dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', async (e) => {
+  fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if(!file) return;
-    if(file.size > MAX_BYTES){
-      toast('Ese PDF pesa demasiado. Intenta con uno más ligero (menos de 4.5 MB).');
-      fileInput.value = '';
-      return;
-    }
     director_selectedFile = file;
-    fileNameEl.textContent = file.name;
+    director_selectedDataUrl = null;
+    const sizeMB = (file.size/1024/1024).toFixed(1);
+    fileNameEl.textContent = file.name + ' (' + sizeMB + ' MB)' + (file.size > LARGE_FILE_WARN_BYTES ? ' — archivo grande, la subida puede tardar' : '');
+    if(!nameInput.value){
+      nameInput.value = file.name.replace(/\.pdf$/i, '');
+    }
     const reader = new FileReader();
     reader.onload = () => {
       director_selectedDataUrl = reader.result;
       updateBroadcastState();
     };
     reader.readAsDataURL(file);
-    if(!nameInput.value){
-      nameInput.value = file.name.replace(/\.pdf$/i, '');
-    }
+    updateBroadcastState();
   });
   nameInput.addEventListener('input', updateBroadcastState);
 
@@ -537,7 +530,6 @@ function escapeHtml(s){
 /* ---------------- MUSICO ---------------- */
 let musico_currentActiveId = null;
 let musico_pdfDoc = null;
-let musico_pageNum = 1;
 let musico_scale = 1.3;
 let musico_initialized = false;
 let musico_libRef = null;
@@ -546,10 +538,8 @@ let musico_libListener = null;
 function initMusico(){
   if(!musico_initialized){
     musico_initialized = true;
-    document.getElementById('zoom-in').onclick = () => { musico_scale = Math.min(musico_scale + 0.2, 3); renderMusicoPage(); };
-    document.getElementById('zoom-out').onclick = () => { musico_scale = Math.max(musico_scale - 0.2, 0.5); renderMusicoPage(); };
-    document.getElementById('prev-page').onclick = () => { if(musico_pageNum > 1){ musico_pageNum--; renderMusicoPage(); } };
-    document.getElementById('next-page').onclick = () => { if(musico_pdfDoc && musico_pageNum < musico_pdfDoc.numPages){ musico_pageNum++; renderMusicoPage(); } };
+    document.getElementById('zoom-in').onclick = () => { musico_scale = Math.min(musico_scale + 0.2, 3); renderAllPages(); };
+    document.getElementById('zoom-out').onclick = () => { musico_scale = Math.max(musico_scale - 0.2, 0.5); renderAllPages(); };
   }
   stopMusicoPolling();
   musico_libRef = db.ref(LIB_KEY);
@@ -594,23 +584,29 @@ async function loadMusicoPdf(dataUrl){
   for(let i=0;i<raw.length;i++) bytes[i] = raw.charCodeAt(i);
   const loadingTask = pdfjsLib.getDocument({ data: bytes });
   musico_pdfDoc = await loadingTask.promise;
-  musico_pageNum = 1;
   musico_scale = 1.3;
-  renderMusicoPage();
+  document.getElementById('viewer').scrollTop = 0;
+  await renderAllPages();
 }
 
-async function renderMusicoPage(){
+async function renderAllPages(){
   if(!musico_pdfDoc) return;
-  const page = await musico_pdfDoc.getPage(musico_pageNum);
-  const viewport = page.getViewport({ scale: musico_scale });
-  const canvas = document.getElementById('pdf-canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  document.getElementById('page-ind').textContent = musico_pageNum + ' / ' + musico_pdfDoc.numPages;
-  document.getElementById('prev-page').disabled = musico_pageNum <= 1;
-  document.getElementById('next-page').disabled = musico_pageNum >= musico_pdfDoc.numPages;
+  const viewerEl = document.getElementById('viewer');
+  const scrollRatio = viewerEl.scrollHeight ? viewerEl.scrollTop / viewerEl.scrollHeight : 0;
+  viewerEl.innerHTML = '';
+  const numPages = musico_pdfDoc.numPages;
+  document.getElementById('page-ind').textContent = numPages + (numPages === 1 ? ' pág.' : ' págs.');
+  for(let pageNum = 1; pageNum <= numPages; pageNum++){
+    const page = await musico_pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: musico_scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    viewerEl.appendChild(canvas);
+  }
+  viewerEl.scrollTop = scrollRatio * viewerEl.scrollHeight;
 }
 </script>
 </body>
